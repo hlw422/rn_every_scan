@@ -2,7 +2,7 @@
  * 扫码主页面
  * 全屏相机 + 扫描框动画 + 权限管理 + torch 控制
  */
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -16,11 +16,16 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ScanFrame } from '@/components/ScanFrame';
 import { useScanHistory } from '@/hooks/useScanHistory';
+import { usePremium } from '@/hooks/usePremium';
+
+// 存储 Key
+const BATCH_MODE_KEY = '@batch_mode_enabled';
 
 // 条码类型配置
 const BARCODE_TYPES = [
@@ -43,11 +48,45 @@ export default function ScanScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
-  const { addRecord } = useScanHistory();
+  const { isPro } = usePremium();
+  const { addRecord } = useScanHistory(isPro);
 
   // 扫描状态
   const [scanned, setScanned] = useState(false);
   const [torchEnabled, setTorchEnabled] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchResults, setBatchResults] = useState<Map<string, { data: string; type: string }>>(new Map());
+  
+  // 批量扫描使用 ref 避免异步延迟
+  const batchResultsRef = useRef<Map<string, { data: string; type: string }>>(new Map());
+  const isBatchScanningRef = useRef(false);
+
+  /**
+   * 保存批量扫码状态
+   */
+  const saveBatchMode = useCallback(async (enabled: boolean) => {
+    try {
+      await AsyncStorage.setItem(BATCH_MODE_KEY, JSON.stringify(enabled));
+    } catch (error) {
+      console.error('保存批量扫码状态失败:', error);
+    }
+  }, []);
+
+  /**
+   * 加载批量扫码状态
+   */
+  const loadBatchMode = useCallback(async () => {
+    try {
+      const value = await AsyncStorage.getItem(BATCH_MODE_KEY);
+      if (value !== null) {
+        const enabled = JSON.parse(value) as boolean;
+        setBatchMode(enabled);
+        isBatchScanningRef.current = enabled;
+      }
+    } catch (error) {
+      console.error('加载批量扫码状态失败:', error);
+    }
+  }, []);
 
   /**
    * 请求相机权限
@@ -70,25 +109,45 @@ export default function ScanScreen() {
    * 扫码成功回调
    */
   const handleBarCodeScanned = useCallback(
-    async ({ data, type }: { data: string; type: string }) => {
-      if (scanned) return;
+    ({ data, type }: { data: string; type: string }) => {
+      // 批量扫码模式：快速收集结果
+      if (batchMode && isPro && isBatchScanningRef.current) {
+        // 使用 ref 同步更新，避免异步延迟
+        if (!batchResultsRef.current.has(data)) {
+          batchResultsRef.current.set(data, { data, type });
+          // 异步更新 UI 显示（不阻塞扫描）
+          setBatchResults(new Map(batchResultsRef.current));
+          // 轻量触觉反馈（不等待完成）
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+        return; // 不暂停扫描，继续检测
+      }
       
-      // 立即暂停扫描
+      // 单次扫码模式
+      if (scanned) return;
       setScanned(true);
       
       // 触觉反馈
-      await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       
-      // 保存到历史记录
-      await addRecord(data, type);
-      
-      // 跳转到结果 Modal
-      router.push({
-        pathname: '/scan-result',
-        params: { data, type },
+      // 保存并跳转
+      addRecord(data, type).then(() => {
+        router.push({
+          pathname: '/scan-result',
+          params: { data, type },
+        });
       });
     },
-    [scanned, addRecord, router]
+    [scanned, addRecord, router, batchMode, isPro]
+  );
+
+  /**
+   * 初始化加载保存的状态
+   */
+  useFocusEffect(
+    useCallback(() => {
+      loadBatchMode();
+    }, [loadBatchMode])
   );
 
   /**
@@ -99,11 +158,55 @@ export default function ScanScreen() {
   }, []);
 
   /**
+   * 完成批量扫描，跳转结果页面
+   */
+  const handleBatchComplete = useCallback(async () => {
+    if (batchResultsRef.current.size === 0) {
+      Alert.alert('提示', '还未扫描到任何二维码');
+      return;
+    }
+
+    // 立即暂停所有扫描（防止继续触发扫码回调）
+    setScanned(true);
+    isBatchScanningRef.current = false;
+
+    // 批量保存到历史记录
+    const resultsArray = Array.from(batchResultsRef.current.values());
+    for (const result of resultsArray) {
+      await addRecord(result.data, result.type);
+    }
+
+    // 跳转到批量结果页面
+    router.push({
+      pathname: '/batch-result',
+      params: { results: JSON.stringify(resultsArray) },
+    });
+
+    // 重置批量模式
+    setBatchMode(false);
+    setBatchResults(new Map());
+    batchResultsRef.current = new Map();
+  }, [addRecord, router]);
+
+  /**
+   * 退出批量模式
+   */
+  const handleExitBatch = useCallback(() => {
+    isBatchScanningRef.current = false;
+    setBatchMode(false);
+    setBatchResults(new Map());
+    batchResultsRef.current = new Map();
+    setScanned(false);
+    saveBatchMode(false);
+  }, [saveBatchMode]);
+
+  /**
    * 当页面重新获得焦点时（从 Modal 返回），自动重置扫码状态
    */
   useFocusEffect(
     useCallback(() => {
       setScanned(false);
+      setBatchResults(new Map());
     }, [])
   );
 
@@ -145,7 +248,13 @@ export default function ScanScreen() {
         barcodeScannerSettings={{
           barcodeTypes: BARCODE_TYPES,
         }}
-        onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+        onBarcodeScanned={
+          scanned 
+            ? undefined  // 已暂停，不触发任何扫码
+            : (batchMode && isPro && isBatchScanningRef.current)
+              ? handleBarCodeScanned  // 批量模式持续扫描
+              : handleBarCodeScanned  // 单次模式
+        }
       />
       
       {/* 遮罩层 */}
@@ -169,9 +278,24 @@ export default function ScanScreen() {
         
         {/* 底部遮罩 */}
         <View style={styles.overlayBottom}>
-          <Text style={styles.hintText}>
-            {scanned ? '扫码成功！' : '将二维码/条形码放入框内自动扫描'}
-          </Text>
+          {batchMode && isPro ? (
+            <View style={styles.batchInfo}>
+              <Text style={styles.batchCount}>{batchResults.size}</Text>
+              <Text style={styles.batchLabel}>已识别（去重）</Text>
+              <TouchableOpacity
+                style={styles.batchCompleteButton}
+                onPress={handleBatchComplete}
+                activeOpacity={0.7}
+              >
+                <MaterialIcons name="check-circle" size={20} color="#000" />
+                <Text style={styles.batchCompleteButtonText}>完成扫描</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <Text style={styles.hintText}>
+              {scanned ? '扫码成功！' : '将二维码/条形码放入框内自动扫描'}
+            </Text>
+          )}
         </View>
       </View>
       
@@ -191,6 +315,47 @@ export default function ScanScreen() {
           <Text style={styles.controlButtonText}>
             {torchEnabled ? '关闭闪光灯' : '开启闪光灯'}
           </Text>
+        </TouchableOpacity>
+        
+        {/* 批量扫码按钮 */}
+        <TouchableOpacity
+          style={styles.controlButton}
+          onPress={() => {
+            if (!isPro) {
+              Alert.alert('Pro 专属功能', '批量扫码需要升级到 Pro 会员', [
+                { text: '取消', style: 'cancel' },
+                { text: '查看详情', onPress: () => router.push('/premium') },
+              ]);
+              return;
+            }
+            if (batchMode) {
+              handleExitBatch();
+              saveBatchMode(false);
+            } else {
+              // 进入批量模式
+              setBatchMode(true);
+              isBatchScanningRef.current = true;
+              batchResultsRef.current = new Map();
+              setBatchResults(new Map());
+              saveBatchMode(true);
+              setScanned(false);
+            }
+          }}
+          activeOpacity={0.7}
+        >
+          <MaterialIcons
+            name={batchMode ? 'layers-clear' : 'layers'}
+            size={28}
+            color={batchMode ? '#FFD700' : isPro ? '#fff' : '#666'}
+          />
+          <Text style={[styles.controlButtonText, batchMode && styles.controlButtonTextActive, !isPro && styles.controlButtonTextDisabled]}>
+            {batchMode ? '退出批量' : '批量扫码'}
+          </Text>
+          {!isPro && !batchMode && (
+            <View style={styles.proBadge}>
+              <Text style={styles.proBadgeText}>Pro</Text>
+            </View>
+          )}
         </TouchableOpacity>
         
         {/* 历史记录按钮 */}
@@ -281,6 +446,34 @@ const styles = StyleSheet.create({
     color: '#B0B0B0',
     fontSize: 14,
   },
+  batchInfo: {
+    alignItems: 'center',
+  },
+  batchCount: {
+    color: '#FFD700',
+    fontSize: 48,
+    fontWeight: '700',
+  },
+  batchLabel: {
+    color: '#B0B0B0',
+    fontSize: 14,
+    marginTop: 4,
+  },
+  batchCompleteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#00E5CC',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+    marginTop: 16,
+    gap: 6,
+  },
+  batchCompleteButtonText: {
+    color: '#000',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   // 底部控制栏
   controlBar: {
     position: 'absolute',
@@ -303,5 +496,25 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     marginTop: 4,
+  },
+  controlButtonTextActive: {
+    color: '#FFD700',
+  },
+  controlButtonTextDisabled: {
+    color: '#666',
+  },
+  proBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: '#FFD700',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  proBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#000',
   },
 });

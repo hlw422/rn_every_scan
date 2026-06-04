@@ -63,7 +63,7 @@ export const formatTimestamp = (timestamp: number): string => {
   return `${date.getMonth() + 1}/${date.getDate()} ${date.getHours().toString().padStart(2, '0')}:${date.getMinutes().toString().padStart(2, '0')}`;
 };
 
-export function useScanHistory() {
+export function useScanHistory(isPro: boolean = false) {
   const [history, setHistory] = useState<ScanRecord[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -107,8 +107,8 @@ export function useScanHistory() {
       // 添加到开头
       existing.unshift(newRecord);
       
-      // 超出限制时截断
-      if (existing.length > MAX_HISTORY) {
+      // 免费版超出限制时截断
+      if (!isPro && existing.length > MAX_HISTORY) {
         existing = existing.slice(0, MAX_HISTORY);
       }
       
@@ -160,5 +160,7 @@ export function useScanHistory() {
     deleteRecord,
     clearHistory,
     refresh: loadHistory,
+    maxHistory: isPro ? Infinity : MAX_HISTORY,
+    isNearLimit: !isPro && history.length >= MAX_HISTORY * 0.9,
   };
 }

@@ -10,18 +10,24 @@ import {
   TouchableOpacity,
   Text,
   Alert,
+  Share,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 
 import { useScanHistory, ScanRecord, isUrl, formatTimestamp } from '@/hooks/useScanHistory';
+import { usePremium } from '@/hooks/usePremium';
+import { FREE_LIMITS } from '@/constants/premium';
 
 export default function HistoryScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { history, loading, clearHistory, refresh } = useScanHistory();
+  const { isPro } = usePremium();
+  const { history, loading, clearHistory, refresh, maxHistory, isNearLimit } = useScanHistory(isPro);
 
   /**
    * 点击记录跳转到详情
@@ -55,6 +61,73 @@ export default function HistoryScreen() {
       ]
     );
   }, [history.length, clearHistory]);
+
+  /**
+   * 导出 CSV
+   */
+  const handleExportCSV = useCallback(async () => {
+    if (!isPro) {
+      Alert.alert('Pro 专属功能', '导出功能需要升级到 Pro 会员', [
+        { text: '取消', style: 'cancel' },
+        { text: '查看详情', onPress: () => router.push('/premium') },
+      ]);
+      return;
+    }
+
+    if (history.length === 0) {
+      Alert.alert('暂无数据', '没有可导出的扫码记录');
+      return;
+    }
+
+    try {
+      // 生成 CSV 内容
+      const csvHeader = 'ID,内容,类型,时间\n';
+      const csvRows = history.map(record => {
+        const escapedData = `"${record.data.replace(/"/g, '""')}"`;
+        const escapedType = `"${record.type.replace(/"/g, '""')}"`;
+        const date = new Date(record.timestamp).toISOString();
+        return `${record.id},${escapedData},${escapedType},${date}`;
+      }).join('\n');
+      
+      const csvContent = csvHeader + csvRows;
+      
+      // 检查 documentDirectory 是否可用
+      if (!FileSystem.documentDirectory) {
+        // 备用方案：直接分享文本内容
+        await Share.share({
+          message: csvContent,
+          title: '扫码历史记录',
+        });
+        return;
+      }
+      
+      // 写入文件
+      const fileName = `scan_history_${Date.now()}.csv`;
+      const fileUri = `${FileSystem.documentDirectory}${fileName}`;
+      
+      await FileSystem.writeAsStringAsync(fileUri, csvContent, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      
+      // 分享文件
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'text/csv',
+          dialogTitle: '导出扫码历史',
+          UTI: 'public.comma-separated-values-text',
+        });
+      } else {
+        // 备用方案：分享文本内容
+        await Share.share({
+          message: csvContent,
+          title: '扫码历史记录',
+        });
+      }
+    } catch (error) {
+      console.error('导出 CSV 失败:', error);
+      Alert.alert('导出失败', `错误信息: ${error instanceof Error ? error.message : '未知错误'}`);
+    }
+  }, [isPro, history, router]);
 
   /**
    * 渲染单条记录
@@ -116,13 +189,50 @@ export default function HistoryScreen() {
       
       {/* 标题栏 */}
       <View style={styles.header}>
-        <Text style={styles.title}>扫码历史</Text>
-        {history.length > 0 && (
-          <TouchableOpacity onPress={handleClear} activeOpacity={0.7}>
-            <Text style={styles.clearText}>清空</Text>
-          </TouchableOpacity>
-        )}
+        <View>
+          <Text style={styles.title}>扫码历史</Text>
+          {!isPro && (
+            <Text style={styles.limitText}>
+              {history.length}/{FREE_LIMITS.MAX_HISTORY} 条记录
+            </Text>
+          )}
+        </View>
+        <View style={styles.headerActions}>
+          {!isPro && (
+            <TouchableOpacity
+              style={styles.proButton}
+              onPress={() => router.push('/premium')}
+              activeOpacity={0.7}
+            >
+              <MaterialIcons name="workspace-premium" size={16} color="#FFD700" />
+              <Text style={styles.proButtonText}>Pro</Text>
+            </TouchableOpacity>
+          )}
+          {history.length > 0 && (
+            <TouchableOpacity style={styles.headerButton} onPress={handleExportCSV} activeOpacity={0.7}>
+              <MaterialIcons name="file-download" size={20} color={isPro ? '#00E5CC' : '#666'} />
+            </TouchableOpacity>
+          )}
+          {history.length > 0 && (
+            <TouchableOpacity onPress={handleClear} activeOpacity={0.7}>
+              <Text style={styles.clearText}>清空</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </View>
+      
+      {/* 额度提示 */}
+      {isNearLimit && !isPro && (
+        <View style={styles.limitBanner}>
+          <MaterialIcons name="warning" size={20} color="#FFD700" />
+          <Text style={styles.limitBannerText}>
+            即将达到免费版上限，升级 Pro 解除限制
+          </Text>
+          <TouchableOpacity onPress={() => router.push('/premium')}>
+            <Text style={styles.limitBannerLink}>升级</Text>
+          </TouchableOpacity>
+        </View>
+      )}
       
       {/* 记录列表 */}
       <FlatList
@@ -165,6 +275,19 @@ const styles = StyleSheet.create({
   clearText: {
     fontSize: 16,
     color: '#FF6B6B',
+  },
+  limitText: {
+    fontSize: 12,
+    color: '#B0B0B0',
+    marginTop: 4,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  headerButton: {
+    padding: 4,
   },
   // 列表
   listContent: {
@@ -241,5 +364,37 @@ const styles = StyleSheet.create({
     color: '#666',
     textAlign: 'center',
     lineHeight: 22,
+  },
+  limitBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 215, 0, 0.15)',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 8,
+  },
+  limitBannerText: {
+    flex: 1,
+    color: '#FFD700',
+    fontSize: 14,
+  },
+  limitBannerLink: {
+    color: '#00E5CC',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  proButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 215, 0, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    gap: 4,
+  },
+  proButtonText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#FFD700',
   },
 });

@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>批量扫码测试 - 10个二维码</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1A1A2E;
+      color: #fff;
+      padding: 20px;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    .header h1 {
+      font-size: 28px;
+      color: #00E5CC;
+      margin-bottom: 8px;
+    }
+    .header p {
+      color: #B0B0B0;
+      font-size: 14px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #2A2A3E;
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 8px 24px rgba(0, 229, 204, 0.2);
+    }
+    .card-number {
+      background: linear-gradient(135deg, #00E5CC, #00B4D8);
+      color: #000;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 16px;
+      margin-bottom: 12px;
+    }
+    .qr-container {
+      background: #fff;
+      padding: 16px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+    }
+    .qr-container img {
+      display: block;
+      width: 180px;
+      height: 180px;
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    .card-content {
+      font-size: 12px;
+      color: #B0B0B0;
+      background: #1A1A2E;
+      padding: 8px 12px;
+      border-radius: 8px;
+      word-break: break-all;
+      text-align: center;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .card-type {
+      display: inline-block;
+      font-size: 11px;
+      color: #00E5CC;
+      background: rgba(0, 229, 204, 0.15);
+      padding: 4px 10px;
+      border-radius: 12px;
+      margin-top: 8px;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 40px;
+      padding: 20px;
+      color: #666;
+      font-size: 13px;
+    }
+    .footer .tip {
+      color: #FFD700;
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>📱 批量扫码测试</h1>
+    <p>包含 10 个不同类型的二维码，用于测试批量扫码功能</p>
+  </div>
+
+  <div class="grid" id="qr-grid"></div>
+
+  <div class="footer">
+    <p class="tip">💡 提示：开启批量扫码模式，连续扫描下方二维码</p>
+    <p>共 10 个二维码 | 支持自动连续扫描</p>
+  </div>
+
+  <script>
+    // 10个不同的测试数据
+    const testCodes = [
+      {
+        title: '网页链接',
+        content: 'https://www.expo.dev',
+        type: 'URL',
+        typeColor: '#4ECDC4'
+      },
+      {
+        title: '纯文本',
+        content: 'Hello, World! 这是测试文本。',
+        type: 'TEXT',
+        typeColor: '#FF6B6B'
+      },
+      {
+        title: 'GitHub 仓库',
+        content: 'https://github.com/expo/expo',
+        type: 'URL',
+        typeColor: '#4ECDC4'
+      },
+      {
+        title: 'WiFi 配置',
+        content: 'WIFI:T:WPA;S:MyNetwork;P:password123;;',
+        type: 'WIFI',
+        typeColor: '#9B59B6'
+      },
+      {
+        title: '联系方式',
+        content: 'BEGIN:VCARD\nVERSION:3.0\nFN:张三\nTEL:+8613800138000\nEMAIL:zhangsan@example.com\nEND:VCARD',
+        type: 'VCARD',
+        typeColor: '#E67E22'
+      },
+      {
+        title: '电话号码',
+        content: 'tel:+8613800138000',
+        type: 'PHONE',
+        typeColor: '#2ECC71'
+      },
+      {
+        title: '邮件地址',
+        content: 'mailto:test@example.com?subject=测试邮件',
+        type: 'EMAIL',
+        typeColor: '#3498DB'
+      },
+      {
+        title: '地理位置',
+        content: 'geo:39.9042,116.4074',
+        type: 'GEO',
+        typeColor: '#E74C3C'
+      },
+      {
+        title: '应用商店',
+        content: 'https://apps.apple.com/app/id123456789',
+        type: 'APP STORE',
+        typeColor: '#007AFF'
+      },
+      {
+        title: '产品编号',
+        content: 'PRODUCT-2024-ABC-12345-XYZ',
+        type: 'CODE',
+        typeColor: '#FFD700'
+      }
+    ];
+
+    // 生成二维码 URL
+    function getQRUrl(content) {
+      const encoded = encodeURIComponent(content);
+      return `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encoded}&margin=10`;
+    }
+
+    // 渲染卡片
+    const grid = document.getElementById('qr-grid');
+    testCodes.forEach((code, index) => {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = `
+        <div class="card-number">${index + 1}</div>
+        <div class="qr-container">
+          <img src="${getQRUrl(code.content)}" alt="${code.title}" loading="lazy" />
+        </div>
+        <div class="card-title">${code.title}</div>
+        <div class="card-content">${code.content}</div>
+        <div class="card-type" style="color: ${code.typeColor}; background: ${code.typeColor}22;">
+          ${code.type}
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+  </script>
+</body>
+</html>
